@@ -4,10 +4,8 @@ pub type AstPath<'a> = Vec<Spanned<&'a str>>;
 
 #[derive(Debug)]
 pub enum TypeConstraintAst<'a> {
-    Type(Box<Spanned<TypeAst<'a>>>),
-    Function(Spanned<Vec<UnnamedFunctionParam<'a>>>, Spanned<Option<TypeAst<'a>>>),
-    Index(Spanned<Vec<UnnamedFunctionParam<'a>>>, Spanned<Option<TypeAst<'a>>>),
-    Tuple(Vec<Spanned<TypeConstraintAst<'a>>>),
+    Type(Box<TypeAst<'a>>),
+    Index(Vec<Spanned<UnnamedFunctionParam<'a>>>, Spanned<Option<Box<TypeAst<'a>>>>),
 }
 
 #[derive(Debug)]
@@ -16,7 +14,7 @@ pub enum TypeAst<'a> {
     Path(AstPath<'a>),
     Tuple(Vec<Spanned<TypeAst<'a>>>),
     NTuple(Box<Spanned<TypeAst<'a>>>, Option<Spanned<usize>>),
-    Function(Spanned<Vec<UnnamedFunctionParam<'a>>>, Spanned<Option<Box<TypeAst<'a>>>>),
+    Function(Vec<Spanned<UnnamedFunctionParam<'a>>>, Spanned<Option<Box<TypeAst<'a>>>>),
     Constraints(Vec<Spanned<TypeConstraintAst<'a>>>),
     Typeof(Box<Ast<'a>>),
 }
@@ -48,7 +46,7 @@ pub enum StructElement<'a> {
     Const(Spanned<&'a str>, Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
     Field(Spanned<&'a str>, Spanned<TypeAst<'a>>),
     StaticField(Spanned<&'a str>, Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
-    Method(Spanned<&'a str>, StructMethodSelf, Spanned<Vec<FunctionParam<'a>>>,
+    Method(Spanned<&'a str>, StructMethodSelf, Vec<Spanned<FunctionParam<'a>>>,
            Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
 }
 
@@ -57,7 +55,7 @@ pub enum Ast<'a> {
     LitString(&'a str),
 
     Block(Vec<Spanned<Ast<'a>>>, bool),
-    Function(Spanned<&'a str>, Spanned<Vec<FunctionParam<'a>>>,
+    Function(Spanned<&'a str>, Vec<Spanned<FunctionParam<'a>>>,
              Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
     Const(Spanned<&'a str>, Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
     Type(Spanned<&'a str>, Spanned<TypeAst<'a>>),

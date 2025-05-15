@@ -208,8 +208,26 @@ impl<'a> Parser<'a> {
         Ok(values.spanned(start_pos..end_pos))
     }
 
+    fn parse_type_or_none_q(&'a self) -> PResult<Spanned<Option<Box<TypeAst<'a>>>>> {
+        Ok(if let Some(tok) = self.peek_take(TokType::Question)? {
+            None.spanned(tok.span)
+        } else {
+            let (ty, span) = self.parse_type()?;
+            Some(Box::new(ty)).spanned(span)
+        })
+    }
+
     fn parse_type_constraint(&'a self) -> PResult<Spanned<TypeConstraintAst<'a>>> {
-        todo!()
+        if let Some(tok) = self.peek_take(TokType::LBrack)? {
+            let params = self.parse_comma_separated(
+                None, TokType::RBrack, Parser::parse_unnamed_func_param)?;
+            self.next_match(TokType::Arrow)?;
+            let res = self.parse_type_or_none_q()?;
+            spanned_ok(tok.span.start..res.1.end, TypeConstraintAst::Index(params.0, res))
+        } else {
+            let (ty, span) = self.parse_type()?;
+            spanned_ok(span, TypeConstraintAst::Type(Box::new(ty)))
+        }
     }
 
     fn parse_type(&'a self) -> PResult<Spanned<TypeAst<'a>>> {
@@ -257,13 +275,8 @@ impl<'a> Parser<'a> {
                 let params = self.parse_comma_separated(
                     Some(TokType::LParen), TokType::RParen, Parser::parse_unnamed_func_param)?;
                 self.peek_take(TokType::Arrow)?;
-                let res = if let Some(tok) = self.peek_take(TokType::Question)? {
-                    None.spanned(tok.span)
-                } else {
-                    let (ty, span) = self.parse_type()?;
-                    Some(Box::new(ty)).spanned(span)
-                };
-                spanned_ok(tok.span.start..res.1.end, TypeAst::Function(params, res))
+                let res = self.parse_type_or_none_q()?;
+                spanned_ok(tok.span.start..res.1.end, TypeAst::Function(params.0, res))
             },
             TokType::Hash => {
                 let val = self.parse_expression()?;
@@ -273,23 +286,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_unnamed_func_param(&'a self) -> PResult<UnnamedFunctionParam<'a>> {
+    fn parse_unnamed_func_param(&'a self) -> PResult<Spanned<UnnamedFunctionParam<'a>>> {
         let reference = self.peek_take_f(
             |tok| tok.ty == TokType::Operator && tok.value == "&")?;
         let ty = self.parse_type()?;
-        Ok(UnnamedFunctionParam {
+        spanned_ok(reference.as_ref().map_or(ty.1.start, |tok| tok.span.start)..ty.1.end, UnnamedFunctionParam {
             ty,
             reference: reference.map(|tok| ().spanned(tok.span)),
         })
     }
 
-    fn parse_func_param(&'a self) -> PResult<FunctionParam<'a>> {
+    fn parse_func_param(&'a self) -> PResult<Spanned<FunctionParam<'a>>> {
         let reference = self.peek_take_f(
             |tok| tok.ty == TokType::Operator && tok.value == "&")?;
         let ident = self.next_match(TokType::Id)?.as_spanned_str();
         self.next_match(TokType::Colon)?;
         let ty = self.parse_type()?;
-        Ok(FunctionParam {
+        spanned_ok(reference.as_ref().map_or(ident.1.start, |tok| tok.span.start)..ty.1.end, FunctionParam {
             name: ident,
             ty,
             reference: reference.map(|tok| ().spanned(tok.span)),
@@ -354,7 +367,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 let body = self.parse_block(true, true, true, Self::parse_statement)?;
-                spanned_ok(tok.span.start..body.1.end, StructElement::Method(ident, method_self, params, result, Box::new(body)))
+                spanned_ok(tok.span.start..body.1.end, StructElement::Method(ident, method_self, params.0, result, Box::new(body)))
             },
             TokType::KwStatic => {
                 let ty = self.parse_optional_colon_type()?;
@@ -385,7 +398,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 let code = self.parse_block(true, true, true, Self::parse_statement)?;
-                spanned_ok(tok.span.start..code.1.end, Ast::Function(ident, params, result, Box::new(code)))
+                spanned_ok(tok.span.start..code.1.end, Ast::Function(ident, params.0, result, Box::new(code)))
             },
             TokType::KwConst => {
                 let ident = self.next_match(TokType::Id)?.as_spanned_str();

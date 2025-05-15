@@ -54,7 +54,7 @@ fn main() {
     let ast = parser.parse();
 
     match ast {
-        Ok(ast) => println!("{:?}", ast),
+        Ok(ast) => println!("{:#?}", ast),
         Err(err) => {
             err.into_report(src).print(Source::from(src)).unwrap();
             std::process::exit(1);
