@@ -51,6 +51,12 @@ pub enum StructElement<'a> {
 }
 
 #[derive(Debug)]
+pub enum MatchPatAst<'a> {
+    Underscore,
+    Variable(&'a str),
+}
+
+#[derive(Debug)]
 pub enum Ast<'a> {
     LitString(&'a str),
 
@@ -62,4 +68,9 @@ pub enum Ast<'a> {
     Struct(Spanned<&'a str>, Spanned<Vec<Spanned<StructElement<'a>>>>),
     Enum(Spanned<&'a str>, Spanned<Vec<(Spanned<&'a str>, Option<f64>)>>),
     Namespace(Spanned<&'a str>, Box<Spanned<Ast<'a>>>),
+    Let(Spanned<MatchPatAst<'a>>, Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
+    While(Box<Spanned<Ast<'a>>>, Box<Spanned<Ast<'a>>>),
+    For(Spanned<MatchPatAst<'a>>, Box<Spanned<Ast<'a>>>, Box<Spanned<Ast<'a>>>),
+    Break,
+    Continue,
 }

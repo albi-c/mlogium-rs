@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use ariadne::Report;
-use crate::ast::{Ast, FunctionParam, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
+use crate::ast::{Ast, FunctionParam, MatchPatAst, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
 use crate::error::{failure, hint_msg};
 use crate::lex::{Lexer, LexerError, LexerIterator, Tok, TokType};
 use crate::span::{spanned_ok, Span, Spannable, Spanned};
@@ -112,6 +112,10 @@ impl<'a> Parser<'a> {
 
     fn peek_match(&'a self, ty: TokType) -> PResult<Option<Tok<'a>>> {
         Self::filter_tok(self.peek(), |tok| tok.ty == ty)
+    }
+
+    fn peek_match_of(&'a self, types: &[TokType]) -> PResult<Option<Tok<'a>>> {
+        Self::filter_tok(self.peek(), |tok| types.contains(&tok.ty))
     }
 
     fn peek_match_f(&'a self, func: impl FnOnce(&Tok<'a>) -> bool) -> PResult<Option<Tok<'a>>> {
@@ -457,8 +461,68 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_match_pattern(&'a self) -> PResult<Spanned<MatchPatAst<'a>>> {
+        let tok = self.next_match_of(&[
+            TokType::Underscore, TokType::Id,
+        ])?;
+        match tok.ty {
+            TokType::Underscore => {
+                spanned_ok(tok.span, MatchPatAst::Underscore)
+            },
+            TokType::Id => {
+                spanned_ok(tok.span, MatchPatAst::Variable(tok.value))
+            },
+            _ => panic!("Unexpected token type: {:?}", tok.ty),
+        }
+    }
+
     fn parse_statement(&'a self) -> AstRes<'a> {
-        todo!()
+        let tok = self.peek_match_of(&[
+            TokType::KwLet, TokType::KwConst, TokType::KwWhile,
+            TokType::KwFor, TokType::KwBreak, TokType::KwContinue,
+        ])?;
+
+        let tok = if tok.is_some() {
+            self.next()?
+        } else {
+            return self.parse_expression()
+        };
+
+        match tok.ty {
+            TokType::KwLet => {
+                let pat = self.parse_match_pattern()?;
+                let ty = self.parse_optional_colon_type()?;
+                self.next_match(TokType::Assign)?;
+                let value = self.parse_expression()?;
+                spanned_ok(tok.span.start..value.1.end, Ast::Let(pat, ty, Box::new(value)))
+            },
+            TokType::KwConst => {
+                let ident = self.next_match(TokType::Id)?.as_spanned_str();
+                let ty = self.parse_optional_colon_type()?;
+                self.next_match(TokType::Assign)?;
+                let value = self.parse_expression()?;
+                spanned_ok(tok.span.start..value.1.end, Ast::Const(ident, ty, Box::new(value)))
+            },
+            TokType::KwWhile => {
+                let cond = self.parse_expression()?;
+                let code = self.parse_block(true, true, false, Self::parse_statement)?;
+                spanned_ok(tok.span.start..code.1.end, Ast::While(Box::new(cond), Box::new(code)))
+            },
+            TokType::KwFor => {
+                let pat = self.parse_match_pattern()?;
+                self.next_match(TokType::KwIn)?;
+                let value = self.parse_expression()?;
+                let code = self.parse_block(true, true, false, Self::parse_statement)?;
+                spanned_ok(tok.span.start..code.1.end, Ast::For(pat, Box::new(value), Box::new(code)))
+            },
+            TokType::KwBreak => {
+                spanned_ok(tok.span, Ast::Break)
+            },
+            TokType::KwContinue => {
+                spanned_ok(tok.span, Ast::Continue)
+            },
+            _ => panic!("Unexpected token type: {:?}", tok.ty),
+        }
     }
 
     fn parse_expression(&'a self) -> AstRes<'a> {
