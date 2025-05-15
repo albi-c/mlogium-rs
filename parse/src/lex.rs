@@ -16,7 +16,7 @@ pub enum TokType {
     #[kw = "_"]
     Underscore,
 
-    LitString, LitBytes, LitInteger, LitFloat, LitChar, LitByte,
+    LitString, LitInteger, LitFloat, LitChar,
 
     KwLet, KwConst, KwFn, KwReturn, KwIf, KwElse, KwWhile, KwFor, KwBreak, KwContinue, KwType,
     KwIn, KwStruct, KwEnum, KwStatic, KwAs, KwNamespace, KwMatch, KwSelf,
@@ -49,11 +49,9 @@ impl TokType {
             TokType::Underscore => "'_'",
 
             TokType::LitString => "string literal",
-            TokType::LitBytes => "byte string literal",
             TokType::LitInteger => "integer literal",
             TokType::LitFloat => "float literal",
             TokType::LitChar => "character literal",
-            TokType::LitByte => "byte literal",
 
             TokType::KwLet => "'let'",
             TokType::KwConst => "'const'",
@@ -332,16 +330,8 @@ impl<'a> Lexer<'a> {
                 },
 
                 'a'..='z' | 'A'..='Z' | '_' => {
-                    if ch == 'b' && self.peek_check('"').is_some() {
-                        self.next().unwrap();
-                        self.lex_string(start, TokType::LitBytes, '"')?
-                    } else if ch == 'b' && self.peek_check('\'').is_some() {
-                        self.next().unwrap();
-                        self.lex_string(start, TokType::LitByte, '\'')?
-                    } else {
-                        self.take_while(Self::match_ident);
-                        self.make_tok(start, TokType::Id).convert_keywords()
-                    }
+                    self.take_while(Self::match_ident);
+                    self.make_tok(start, TokType::Id).convert_keywords()
                 },
 
                 '"' => self.lex_string(start, TokType::LitString, '"')?,

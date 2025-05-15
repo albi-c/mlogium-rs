@@ -7,7 +7,15 @@ struct S {
     type T = num;
     let x: num;
 
-    fn st() {}
+    fn st(&a: i32) {}
+}
+
+struct Opt {
+    let v: num;
+    let h: num;
+    
+    fn map(self, func: {fn(S::T) -> ?}) {}
+    fn at(self, idx: {[num] -> ?}) {}
 }
 
 enum T {
@@ -40,8 +48,6 @@ fn main() {
             }
         }
     };
-
-    println!("{:?}", tokens);
 
     let lexer = Lexer::new(src);
     let parser = Parser::new(lexer, src);

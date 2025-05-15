@@ -1,15 +1,37 @@
 use crate::span::Spanned;
 
+pub type AstPath<'a> = Vec<Spanned<&'a str>>;
+
+#[derive(Debug)]
+pub enum TypeConstraintAst<'a> {
+    Type(Box<Spanned<TypeAst<'a>>>),
+    Function(Spanned<Vec<UnnamedFunctionParam<'a>>>, Spanned<Option<TypeAst<'a>>>),
+    Index(Spanned<Vec<UnnamedFunctionParam<'a>>>, Spanned<Option<TypeAst<'a>>>),
+    Tuple(Vec<Spanned<TypeConstraintAst<'a>>>),
+}
+
 #[derive(Debug)]
 pub enum TypeAst<'a> {
     Ident(&'a str),
+    Path(AstPath<'a>),
+    Tuple(Vec<Spanned<TypeAst<'a>>>),
+    NTuple(Box<Spanned<TypeAst<'a>>>, Option<Spanned<usize>>),
+    Function(Spanned<Vec<UnnamedFunctionParam<'a>>>, Spanned<Option<Box<TypeAst<'a>>>>),
+    Constraints(Vec<Spanned<TypeConstraintAst<'a>>>),
+    Typeof(Box<Ast<'a>>),
+}
+
+#[derive(Debug)]
+pub struct UnnamedFunctionParam<'a> {
+    pub ty: Spanned<TypeAst<'a>>,
+    pub reference: Option<Spanned<()>>,
 }
 
 #[derive(Debug)]
 pub struct FunctionParam<'a> {
     pub name: Spanned<&'a str>,
     pub ty: Spanned<TypeAst<'a>>,
-    pub reference: bool,
+    pub reference: Option<Spanned<()>>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

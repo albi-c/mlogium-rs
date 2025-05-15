@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use ariadne::Report;
-use crate::ast::{Ast, FunctionParam, StructElement, StructMethodSelf, TypeAst};
+use crate::ast::{Ast, FunctionParam, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
 use crate::error::{failure, hint_msg};
 use crate::lex::{Lexer, LexerError, LexerIterator, Tok, TokType};
 use crate::span::{spanned_ok, Span, Spannable, Spanned};
@@ -9,13 +9,14 @@ use crate::span::{spanned_ok, Span, Spannable, Spanned};
 pub enum ParserError {
     LexerError(LexerError),
     UnexpectedToken(Span, TokType, String, Box<[String]>),
-    FloatParseError(Span, String),
+    FloatParseError(Span, String, String),
+    IntParseError(Span, String, String),
 }
 
 impl ParserError {
-    fn unexpected<'a>(tok: Tok, hint: &[&str]) -> Self {
+    fn unexpected<'a>(tok: Tok, hint: Vec<String>) -> Self {
         ParserError::UnexpectedToken(tok.span, tok.ty, tok.value.to_string(),
-                                     hint.into_iter().map(|s| s.to_string()).collect())
+                                     hint.into_boxed_slice())
     }
 
     pub fn into_report(self, src: &str) -> Report<Span> {
@@ -24,10 +25,12 @@ impl ParserError {
             ParserError::UnexpectedToken(span, _, value, hint) =>
                 failure(format!("Unexpected token: '{}'", value),
                         (hint_msg(&hint), span), []),
-            ParserError::FloatParseError(span, value) =>
-                // TODO: hint
+            ParserError::FloatParseError(span, value, msg) =>
                 failure(format!("Could not parse float: '{}'", value),
-                        (hint_msg(&[]), span), []),
+                        (hint_msg(&[msg]), span), []),
+            ParserError::IntParseError(span, value, msg) =>
+                failure(format!("Could not parse integer: '{}'", value),
+                        (hint_msg(&[msg]), span), []),
         }
     }
 }
@@ -62,22 +65,29 @@ impl<'a> Parser<'a> {
             Ok(tok) => if tok.ty == ty {
                 Ok(tok)
             } else {
-                Err(ParserError::unexpected(tok, &[ty.name()]))
+                Err(ParserError::unexpected(tok, vec![ty.name().to_string()]))
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    fn next_match_of_with_options(&'a self, types: &[TokType], options: impl IntoIterator<Item = String>) -> PResult<Tok<'a>> {
+        match self.next() {
+            Ok(tok) => if types.contains(&tok.ty) {
+                Ok(tok)
+            } else {
+                let mut hint = types.into_iter()
+                    .map(|ty| ty.name().to_string())
+                    .collect::<Vec<_>>();
+                hint.extend(options);
+                Err(ParserError::unexpected(tok, hint))
             },
             Err(e) => Err(e),
         }
     }
 
     fn next_match_of(&'a self, types: &[TokType]) -> PResult<Tok<'a>> {
-        match self.next() {
-            Ok(tok) => if types.contains(&tok.ty) {
-                Ok(tok)
-            } else {
-                Err(ParserError::unexpected(
-                    tok, &types.into_iter().map(|ty| ty.name()).collect::<Vec<_>>()))
-            },
-            Err(e) => Err(e),
-        }
+        self.next_match_of_with_options(types, [])
     }
 
     fn peek(&'a self) -> PResult<Option<Tok<'a>>> {
@@ -190,7 +200,7 @@ impl<'a> Parser<'a> {
             values.push(func(self)?);
 
             if self.peek_take(TokType::Comma)?.is_none() {
-                end_pos = self.next_match(end)?.span.end;
+                end_pos = self.next_match_of(&[end, TokType::Comma])?.span.end;
                 break;
             }
         }
@@ -198,21 +208,91 @@ impl<'a> Parser<'a> {
         Ok(values.spanned(start_pos..end_pos))
     }
 
+    fn parse_type_constraint(&'a self) -> PResult<Spanned<TypeConstraintAst<'a>>> {
+        todo!()
+    }
+
     fn parse_type(&'a self) -> PResult<Spanned<TypeAst<'a>>> {
-        let ident = self.next_match(TokType::Id)?;
-        Ok(TypeAst::Ident(ident.value).spanned(ident.span))
+        let tok = self.next_match_of(&[
+            TokType::Id, TokType::LParen, TokType::LBrace,
+            TokType::LBrack, TokType::KwFn, TokType::Hash,
+        ])?;
+
+        match tok.ty {
+            TokType::Id => {
+                if self.peek_match(TokType::DoubleColon)?.is_some() {
+                    let mut path = vec![tok.as_spanned_str()];
+                    while self.peek_take(TokType::DoubleColon)?.is_some() {
+                        path.push(self.next_match(TokType::Id)?.as_spanned_str());
+                    }
+                    spanned_ok(tok.span.start..path.last().unwrap().1.end, TypeAst::Path(path))
+                } else {
+                    spanned_ok(tok.span, TypeAst::Ident(tok.value))
+                }
+            },
+            TokType::LParen => {
+                let types = self.parse_comma_separated(None, TokType::RParen, Parser::parse_type)?;
+                spanned_ok(tok.span.start..types.1.end, TypeAst::Tuple(types.0))
+            },
+            TokType::LBrack => {
+                let ty = self.parse_type()?;
+                let count = if self.peek_take(TokType::Semicolon)?.is_some() {
+                    let count = self.next_match(TokType::LitInteger)?;
+                    Some(usize::from_str(count.value).map_err(
+                        |err| ParserError::IntParseError(
+                            count.span.clone(), count.value.to_string(), err.to_string()))?
+                        .spanned(count.span))
+                } else {
+                    None
+                };
+                let end = self.next_match(TokType::RBrack)?;
+                spanned_ok(tok.span.start..end.span.end, TypeAst::NTuple(Box::new(ty), count))
+            },
+            TokType::LBrace => {
+                let constraints = self.parse_comma_separated(
+                    None, TokType::RBrace, Parser::parse_type_constraint)?;
+                spanned_ok(tok.span.start..constraints.1.end, TypeAst::Constraints(constraints.0))
+            },
+            TokType::KwFn => {
+                let params = self.parse_comma_separated(
+                    Some(TokType::LParen), TokType::RParen, Parser::parse_unnamed_func_param)?;
+                self.peek_take(TokType::Arrow)?;
+                let res = if let Some(tok) = self.peek_take(TokType::Question)? {
+                    None.spanned(tok.span)
+                } else {
+                    let (ty, span) = self.parse_type()?;
+                    Some(Box::new(ty)).spanned(span)
+                };
+                spanned_ok(tok.span.start..res.1.end, TypeAst::Function(params, res))
+            },
+            TokType::Hash => {
+                let val = self.parse_expression()?;
+                spanned_ok(tok.span.start..val.1.end, TypeAst::Typeof(Box::new(val.0)))
+            },
+            _ => panic!("Unexpected token type: {:?}", tok.ty),
+        }
+    }
+
+    fn parse_unnamed_func_param(&'a self) -> PResult<UnnamedFunctionParam<'a>> {
+        let reference = self.peek_take_f(
+            |tok| tok.ty == TokType::Operator && tok.value == "&")?;
+        let ty = self.parse_type()?;
+        Ok(UnnamedFunctionParam {
+            ty,
+            reference: reference.map(|tok| ().spanned(tok.span)),
+        })
     }
 
     fn parse_func_param(&'a self) -> PResult<FunctionParam<'a>> {
         let reference = self.peek_take_f(
-            |tok| tok.ty == TokType::Operator && tok.value == "&")?.is_some();
+            |tok| tok.ty == TokType::Operator && tok.value == "&")?;
         let ident = self.next_match(TokType::Id)?.as_spanned_str();
         self.next_match(TokType::Colon)?;
         let ty = self.parse_type()?;
         Ok(FunctionParam {
             name: ident,
             ty,
-            reference,
+            reference: reference.map(|tok| ().spanned(tok.span)),
         })
     }
 
@@ -265,6 +345,7 @@ impl<'a> Parser<'a> {
                 let params = if method_self == StructMethodSelf::Static || self.peek_take(TokType::Comma)?.is_some() {
                     self.parse_comma_separated(None, TokType::RParen, Self::parse_func_param)?
                 } else {
+                    self.next_match(TokType::RParen)?;
                     vec![].spanned(lparen.span)
                 };
                 let result = if self.peek_take(TokType::Arrow)?.is_some() {
@@ -343,7 +424,7 @@ impl<'a> Parser<'a> {
                                 .map_or(1., |_| -1.);
                             let tok = parser.next_match_of(&[TokType::LitInteger, TokType::LitFloat])?;
                             let val = f64::from_str(tok.value).map_err(
-                                |_| ParserError::FloatParseError(tok.span, tok.value.to_string()))?;
+                                |err| ParserError::FloatParseError(tok.span, tok.value.to_string(), err.to_string()))?;
                             Some(val * neg)
                         } else {
                             None
