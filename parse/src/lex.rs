@@ -16,14 +16,13 @@ pub enum TokType {
     #[kw = "_"]
     Underscore,
 
-    LitString, LitInteger, LitFloat, LitChar,
+    LitString, LitInteger, LitFloat, LitChar, LitColor,
 
     KwLet, KwConst, KwFn, KwReturn, KwIf, KwElse, KwWhile, KwFor, KwBreak, KwContinue, KwType,
     KwIn, KwStruct, KwEnum, KwStatic, KwAs, KwNamespace, KwMatch, KwSelf,
 
     Assign,
     Operator,
-    Walrus,
 
     Arrow,
     FatArrow,
@@ -52,6 +51,7 @@ impl TokType {
             TokType::LitInteger => "integer literal",
             TokType::LitFloat => "float literal",
             TokType::LitChar => "character literal",
+            TokType::LitColor => "color literal",
 
             TokType::KwLet => "'let'",
             TokType::KwConst => "'const'",
@@ -75,7 +75,6 @@ impl TokType {
 
             TokType::Assign => "'='",
             TokType::Operator => "operator",
-            TokType::Walrus => "':='",
             TokType::Arrow => "'->'",
             TokType::FatArrow => "'=>'",
             TokType::Semicolon => "';'",
@@ -275,14 +274,20 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // pub fn lex_integer(&self) -> LexerResult<Option<Tok>> {
-    //     if let Some((start, _)) = self.peek() {
-    //         self.take_while(|ch| matches!(ch, '0'..='9'));
-    //         Ok(Some(self.make_tok(start, TokType::LitInteger)))
-    //     } else {
-    //         Ok(None)
-    //     }
-    // }
+    pub fn lex_attribute(&self) -> LexerResult<Tok> {
+        Ok(match self.next_req()? {
+            (pos, ch @ '0'..='9') => {
+                self.take_while(|ch| matches!(ch, '0'..='9'));
+                self.make_tok(pos, TokType::LitInteger)
+            },
+            (pos, ch @ ('a'..='z' | 'A'..='Z' | '_')) => {
+                self.take_while(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'));
+                self.make_tok(pos, TokType::LitInteger)
+            },
+            (pos, ch) => return Err(Self::unexpected_char_with_hint(
+                pos, ch, &["digit", "letter", "_"]))
+        })
+    }
 
     fn match_ident(ch: char) -> bool {
         matches!(ch, '0'..='9' | 'A'..='Z' | 'a'..='z' | '_')
@@ -329,7 +334,7 @@ impl<'a> Lexer<'a> {
                     }
                 },
 
-                'a'..='z' | 'A'..='Z' | '_' => {
+                'a'..='z' | 'A'..='Z' | '_' | '@' => {
                     self.take_while(Self::match_ident);
                     self.make_tok(start, TokType::Id).convert_keywords()
                 },
@@ -358,8 +363,6 @@ impl<'a> Lexer<'a> {
 
                 ':' => if self.peek_take(':').is_some() {
                     self.make_tok(start, tok_type![::])
-                } else if self.peek_take('=').is_some() {
-                    self.make_tok(start, tok_type![:=])
                 } else {
                     self.make_tok(start, tok_type![:])
                 },
@@ -399,10 +402,25 @@ impl<'a> Lexer<'a> {
                     }
                     self.make_tok(start, TokType::Operator)
                 },
-                '+' | '/' | '^' | '~' | '%' => self.make_tok(start, TokType::Operator),
+                '+' | '/' | '^' | '~' => self.make_tok(start, TokType::Operator),
+                '%' => {
+                    if self.peek_take('[').is_some() {
+                        self.take_while(|ch| ch != ']');
+                        let (pos, ch) = self.next_req()?;
+                        if ch != ']' {
+                            return Err(Self::unexpected_char_with_ch_ref_hint(pos, ch, &[']']));
+                        }
+                        self.make_tok(start, TokType::LitColor)
+                    } else if self.peek().map_or(false, |(_, ch)| ch.is_ascii_hexdigit()) {
+                        self.take_while(|ch| ch.is_ascii_hexdigit());
+                        self.make_tok(start, TokType::LitColor)
+                    } else {
+                        self.make_tok(start, TokType::Operator)
+                    }
+                },
 
                 _ => return Err(Self::unexpected_char_with_hint(
-                    start, ch, &["digit", "letter", "operator", "\"", "'"])),
+                    start, ch, &["digit", "letter", "operator", "\"", "'", "@", "_"])),
             }))
         }
 

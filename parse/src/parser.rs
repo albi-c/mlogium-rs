@@ -1,9 +1,9 @@
 use std::str::FromStr;
 use ariadne::Report;
-use crate::ast::{Ast, FunctionParam, MatchPatAst, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
+use crate::ast::{Ast, FunctionParam, LambdaCapture, LambdaParam, MatchPatAst, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
 use crate::error::{failure, hint_msg};
 use crate::lex::{Lexer, LexerError, LexerIterator, Tok, TokType};
-use crate::span::{spanned_ok, Span, Spannable, Spanned};
+use crate::span::{spanned, spanned_ok, Span, Spannable, Spanned};
 
 #[derive(Debug)]
 pub enum ParserError {
@@ -43,6 +43,26 @@ pub struct Parser<'a> {
     lexer: LexerIterator<'a>,
     end_pos: usize,
 }
+
+enum OpRule {
+    Unary(&'static [&'static str]),
+    UnaryTy(TokType),
+    Binary(&'static [&'static str]),
+}
+const OP_RULES: &'static [OpRule] = &[
+    OpRule::Binary(&["||"]),
+    OpRule::Binary(&["&&"]),
+    OpRule::Unary(&["!"]),
+    OpRule::Binary(&["<", ">", "<=", ">=", "==", "!=", "===", "!=="]),
+    OpRule::Binary(&["|", "&", "^"]),
+    OpRule::Binary(&["<<", ">>"]),
+    OpRule::Binary(&["++"]),
+    OpRule::Binary(&["+", "-"]),
+    OpRule::Binary(&["*", "/", "/.", "%"]),
+    OpRule::Unary(&["-", "~"]),
+    OpRule::Binary(&["**"]),
+    OpRule::UnaryTy(TokType::Ellipsis),
+];
 
 impl<'a> Parser<'a> {
     pub fn new(lexer: Lexer<'a>, src: &'a str) -> Self {
@@ -185,8 +205,10 @@ impl<'a> Parser<'a> {
         Ok(Ast::Block(code, returns_last).spanned(start..end))
     }
 
-    fn parse_comma_separated<T>(&'a self, start: Option<TokType>, end: TokType,
-                                func: impl Fn(&'a Self) -> PResult<T>) -> PResult<Spanned<Vec<T>>> {
+    fn parse_comma_separated_to_f<T>(&'a self, start: Option<TokType>, end: impl Fn(&Tok<'a>) -> bool,
+                                     end_name: &str,
+                                     func: impl Fn(&'a Self) -> PResult<T>,
+                                     to: &mut Vec<T>) -> PResult<Span> {
         let start_pos = if let Some(ty) = start {
             self.next_match(ty)?.span.start
         } else {
@@ -194,22 +216,39 @@ impl<'a> Parser<'a> {
         };
         let end_pos;
 
-        let mut values = vec![];
         loop {
-            if let Some(tok) = self.peek_take(end)? {
+            if let Some(tok) = self.peek_take_f(&end)? {
                 end_pos = tok.span.end;
                 break;
             }
 
-            values.push(func(self)?);
+            to.push(func(self)?);
 
             if self.peek_take(TokType::Comma)?.is_none() {
-                end_pos = self.next_match_of(&[end, TokType::Comma])?.span.end;
+                let end_tok = self.next()?;
+                if !end(&end_tok) {
+                    return Err(ParserError::unexpected(end_tok, vec![
+                        TokType::Comma.name().to_string(), end_name.to_string()]))
+                }
+                end_pos = end_tok.span.end;
                 break;
             }
         }
 
-        Ok(values.spanned(start_pos..end_pos))
+        Ok(start_pos..end_pos)
+    }
+
+    fn parse_comma_separated_to<T>(&'a self, start: Option<TokType>, end: TokType,
+                                   func: impl Fn(&'a Self) -> PResult<T>,
+                                   to: &mut Vec<T>) -> PResult<Span> {
+        self.parse_comma_separated_to_f(start, |tok| tok.ty == end, end.name(), func, to)
+    }
+
+    fn parse_comma_separated<T>(&'a self, start: Option<TokType>, end: TokType,
+                                func: impl Fn(&'a Self) -> PResult<T>) -> PResult<Spanned<Vec<T>>> {
+        let mut to = vec![];
+        let span = self.parse_comma_separated_to(start, end, func, &mut to)?;
+        spanned_ok(span, to)
     }
 
     fn parse_type_or_none_q(&'a self) -> PResult<Spanned<Option<Box<TypeAst<'a>>>>> {
@@ -296,7 +335,7 @@ impl<'a> Parser<'a> {
         let ty = self.parse_type()?;
         spanned_ok(reference.as_ref().map_or(ty.1.start, |tok| tok.span.start)..ty.1.end, UnnamedFunctionParam {
             ty,
-            reference: reference.map(|tok| ().spanned(tok.span)),
+            reference: reference.map(|tok| tok.span),
         })
     }
 
@@ -309,7 +348,7 @@ impl<'a> Parser<'a> {
         spanned_ok(reference.as_ref().map_or(ident.1.start, |tok| tok.span.start)..ty.1.end, FunctionParam {
             name: ident,
             ty,
-            reference: reference.map(|tok| ().spanned(tok.span)),
+            reference: reference.map(|tok| tok.span),
         })
     }
 
@@ -526,8 +565,248 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&'a self) -> AstRes<'a> {
-        // TODO: when parsing {expr}.{attr}, use special lexer fn for attr -
-        // TODO: - prevent two int attrs from merging as float
-        todo!()
+        self.parse_assignment()
+    }
+
+    fn parse_assignment(&'a self) -> AstRes<'a> {
+        let left = self.parse_cast()?;
+        if self.peek_take(TokType::Assign)?.is_some() {
+            let right = self.parse_cast()?;
+            spanned_ok(left.1.start..right.1.end, Ast::Assign(Box::new(left), Box::new(right)))
+        } else {
+            Ok(left)
+        }
+    }
+
+    fn parse_cast(&'a self) -> AstRes<'a> {
+        let mut left = self.parse_range()?;
+        while self.peek_take(TokType::KwAs)?.is_some() {
+            let right = self.parse_type()?;
+            left = spanned(left.1.start..right.1.end, Ast::Cast(Box::new(left), right))
+        }
+        Ok(left)
+    }
+
+    fn parse_range(&'a self) -> AstRes<'a> {
+        let start = self.parse_operators()?;
+        if self.peek_take(TokType::DoubleDot)?.is_some() {
+            let end = self.parse_operators()?;
+            let (end_pos, step) = if self.peek_take(TokType::DoubleDot)?.is_some() {
+                let step = self.parse_operators()?;
+                (step.1.end, Some(Box::new(step)))
+            } else {
+                (end.1.end, None)
+            };
+            spanned_ok(start.1.start..end_pos, Ast::Range(Box::new(start), Box::new(end), step))
+        } else {
+            Ok(start)
+        }
+    }
+
+    fn parse_operators_impl(&'a self, rules: &[OpRule], bottom: impl Fn(&'a Self) -> AstRes<'a> + Copy) -> AstRes<'a> {
+        let (rule, rest) = match rules {
+            [rule, rest @ ..] => (rule, rest),
+            _ => return bottom(self),
+        };
+
+        match rule {
+            OpRule::Unary(options) =>
+                if let Some(op) = self.peek_take_f(
+                    |tok| tok.ty == TokType::Operator && options.contains(&tok.value))? {
+                    let value = self.parse_operators_impl(rules, bottom)?;
+                    spanned_ok(op.span.start..value.1.end, Ast::Unary(op.as_spanned_str(), Box::new(value)))
+                } else {
+                    self.parse_operators_impl(rest, bottom)
+                },
+            OpRule::UnaryTy(ty) =>
+                if let Some(op) = self.peek_take(*ty)? {
+                    let value = self.parse_operators_impl(rules, bottom)?;
+                    spanned_ok(op.span.start..value.1.end, Ast::Unary(op.as_spanned_str(), Box::new(value)))
+                } else {
+                    self.parse_operators_impl(rest, bottom)
+                },
+            OpRule::Binary(options) => {
+                let mut left = self.parse_operators_impl(rest, bottom)?;
+                while let Some(op) = self.peek_take_f(
+                    |tok| tok.ty == TokType::Operator && options.contains(&tok.value))? {
+                    let right = self.parse_operators_impl(rest, bottom)?;
+                    left = spanned(left.1.start..right.1.end,
+                                   Ast::Binary(Box::new(left), op.as_spanned_str(), Box::new(right)));
+                }
+                Ok(left)
+            },
+        }
+    }
+
+    fn parse_operators(&'a self) -> AstRes<'a> {
+        self.parse_operators_impl(OP_RULES, Self::parse_call_index_attr)
+    }
+
+    fn parse_call_index_attr(&'a self) -> AstRes<'a> {
+        let mut val = self.parse_atom()?;
+        while let Some(tok) = self.peek_match_of(&[
+            TokType::LParen, TokType::LBrack,
+            TokType::Dot, TokType::DoubleColon,
+        ])? {
+            self.next()?;
+            match tok.ty {
+                TokType::LParen => {
+                    // TODO: unpack
+                    let params = self.parse_comma_separated(
+                        None, TokType::RParen, Self::parse_expression)?;
+                    val = spanned(val.1.start..params.1.end, Ast::Call(Box::new(val), params.0))
+                },
+                TokType::LBrack => {
+                    // TODO: unpack
+                    let params = self.parse_comma_separated(
+                        None, TokType::RBrack, Self::parse_expression)?;
+                    val = spanned(val.1.start..params.1.end, Ast::Index(Box::new(val), params.0))
+                },
+                TokType::Dot => {
+                    let name = self.lexer.lexer().lex_attribute()
+                        .map_err(ParserError::LexerError)?.as_spanned_str();
+                    val = spanned(val.1.start..name.1.end, Ast::Attr(Box::new(val), false, name))
+                },
+                TokType::DoubleColon => {
+                    let name = self.next_match(TokType::Id)?.as_spanned_str();
+                    val = spanned(val.1.start..name.1.end, Ast::Attr(Box::new(val), true, name))
+                },
+                _ => panic!("Unexpected token type: {:?}", tok.ty),
+            }
+        }
+        Ok(val)
+    }
+
+    fn parse_lambda_param(&'a self) -> PResult<Spanned<LambdaParam<'a>>> {
+        let reference = self.peek_take_f(
+            |tok| tok.ty == TokType::Operator && tok.value == "&")?;
+        let ident = self.next_match(TokType::Id)?.as_spanned_str();
+        let ty = self.parse_optional_colon_type()?;
+        spanned_ok(reference.as_ref().map_or(
+            ident.1.start, |tok| tok.span.start)..ty.as_ref().map_or(
+            ident.1.end, |ty| ty.1.end),LambdaParam {
+            name: ident,
+            ty,
+            reference: reference.map(|tok| tok.span),
+        })
+    }
+
+    fn parse_lambda_capture(&'a self) -> PResult<Spanned<LambdaCapture<'a>>> {
+        if let Some(reference) = self.peek_take_f(
+            |tok| tok.ty == TokType::Operator && tok.value == "&")? {
+            let ident = self.next_match(TokType::Id)?.as_spanned_str();
+            spanned_ok(reference.span.start..ident.1.end, LambdaCapture::Ref(reference.span, ident))
+        } else {
+            let ident = self.next_match(TokType::Id)?.as_spanned_str();
+            if self.peek_take(TokType::Assign)?.is_some() {
+                let value = self.parse_expression()?;
+                spanned_ok(ident.1.start..value.1.end, LambdaCapture::Value(ident, Box::new(value)))
+            } else {
+                spanned_ok(ident.1.clone(), LambdaCapture::Copy(ident))
+            }
+        }
+    }
+
+    fn parse_atom(&'a self) -> AstRes<'a> {
+        let tok = self.next()?;
+
+        match tok.ty {
+            TokType::KwIf => {
+                let cond = self.parse_expression()?;
+                let b_true = self.parse_block(
+                    true, true, true, Self::parse_statement)?;
+                let (end_pos, b_false) = if self.peek_take(TokType::KwElse)?.is_some() {
+                    let block = self.parse_block(
+                        true, true, true, Self::parse_statement)?;
+                    (block.1.end, Some(Box::new(block)))
+                } else {
+                    (b_true.1.end, None)
+                };
+                spanned_ok(tok.span.start..end_pos, Ast::If(Box::new(cond), Box::new(b_true), b_false))
+            },
+            TokType::KwConst => {
+                todo!("Comptime")
+            },
+            TokType::LBrace => {
+                self.parse_block(false, true, true, Self::parse_statement)
+            },
+            TokType::LParen => {
+                if let Some(end) = self.peek_take(TokType::RParen)? {
+                    spanned_ok(tok.span.start..end.span.end, Ast::Tuple(vec![]))
+                } else {
+                    // TODO: unpack
+                    let val = self.parse_expression()?;
+                    if self.peek_take(TokType::Comma)?.is_some() {
+                        let mut values = vec![val];
+                        let span = self.parse_comma_separated_to(
+                            None, TokType::RParen, Self::parse_expression, &mut values)?;
+                        spanned_ok(tok.span.start..span.end, Ast::Tuple(values))
+                    } else {
+                        // comma is already handled
+                        let end = self.next_match_of(&[TokType::RParen, TokType::Comma])?;
+                        spanned_ok(tok.span.start..end.span.end, val.0)
+                    }
+                }
+            },
+            TokType::LitInteger => {
+                spanned_ok(tok.span, Ast::LitInteger(tok.value))
+            },
+            TokType::LitFloat => {
+                spanned_ok(tok.span, Ast::LitFloat(tok.value))
+            },
+            TokType::LitString => {
+                spanned_ok(tok.span, Ast::LitString(tok.value))
+            },
+            TokType::LitChar => {
+                spanned_ok(tok.span, Ast::LitChar(tok.value))
+            },
+            TokType::LitColor => {
+                spanned_ok(tok.span, Ast::LitColor(tok.value))
+            },
+            TokType::Operator if tok.value == "|" || tok.value == "||" => {
+                let start = tok.span.start;
+                let params = if tok.value == "||" {
+                    vec![].spanned(tok.span)
+                } else {
+                    let mut params = vec![];
+                    let span = self.parse_comma_separated_to_f(
+                        None, |tok| tok.ty == TokType::Operator && tok.value == "||",
+                        "'|'", Self::parse_lambda_param, &mut params)?;
+                    params.spanned(tok.span.start..span.end)
+                };
+                let captures = if self.peek_take(TokType::LBrack)?.is_some() {
+                    self.parse_comma_separated(None, TokType::RBrack, Self::parse_lambda_capture)?.0
+                } else {
+                    vec![]
+                };
+                let result = if self.peek_take(TokType::Arrow)?.is_some() {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                let code = self.parse_expression()?;
+                spanned_ok(start..code.1.end, Ast::Lambda(params.0, captures, result, Box::new(code)))
+            },
+            TokType::Id => {
+                spanned_ok(tok.span, Ast::Variable(tok.value))
+            },
+            TokType::Hash => {
+                todo!("Macros")
+            },
+            TokType::DoubleColon => {
+                spanned_ok(tok.span, Ast::ImplicitEnumVariable(tok.value))
+            },
+            _ => {
+                let mut hint = [
+                    TokType::KwIf, TokType::KwConst, TokType::LBrace,
+                    TokType::LParen, TokType::Hash, TokType::DoubleColon,
+                    TokType::Id,
+                ].into_iter()
+                    .map(|ty| ty.name().to_string())
+                    .collect::<Vec<_>>();
+                hint.extend(["literal".to_string(), "'|'".to_string()]);
+                Err(ParserError::unexpected(tok, hint))
+            },
+        }
     }
 }

@@ -26,6 +26,7 @@ fn max(a: num, b: num) {
 }
 
 fn main() -> num {
+    0
 }
 "#;
 
