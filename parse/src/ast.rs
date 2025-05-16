@@ -46,6 +46,12 @@ pub enum LambdaCapture<'a> {
     Value(Spanned<&'a str>, Box<Spanned<Ast<'a>>>),
 }
 
+#[derive(Debug)]
+pub struct FunctionCallParam<'a> {
+    pub value: Box<Spanned<Ast<'a>>>,
+    pub unpack: Option<Span>,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum StructMethodSelf {
     Static,
@@ -91,12 +97,12 @@ pub enum Ast<'a> {
     Range(Box<Spanned<Ast<'a>>>, Box<Spanned<Ast<'a>>>, Option<Box<Spanned<Ast<'a>>>>),
     Unary(Spanned<&'a str>, Box<Spanned<Ast<'a>>>),
     Binary(Box<Spanned<Ast<'a>>>, Spanned<&'a str>, Box<Spanned<Ast<'a>>>),
-    Call(Box<Spanned<Ast<'a>>>, Vec<Spanned<Ast<'a>>>),
-    Index(Box<Spanned<Ast<'a>>>, Vec<Spanned<Ast<'a>>>),
+    Call(Box<Spanned<Ast<'a>>>, Vec<Spanned<FunctionCallParam<'a>>>),
+    Index(Box<Spanned<Ast<'a>>>, Vec<Spanned<FunctionCallParam<'a>>>),
     Attr(Box<Spanned<Ast<'a>>>, bool, Spanned<&'a str>),
 
     If(Box<Spanned<Ast<'a>>>, Box<Spanned<Ast<'a>>>, Option<Box<Spanned<Ast<'a>>>>),
-    Tuple(Vec<Spanned<Ast<'a>>>),
+    Tuple(Vec<Spanned<FunctionCallParam<'a>>>),
     Lambda(Vec<Spanned<LambdaParam<'a>>>, Vec<Spanned<LambdaCapture<'a>>>,
            Option<Spanned<TypeAst<'a>>>, Box<Spanned<Ast<'a>>>),
 

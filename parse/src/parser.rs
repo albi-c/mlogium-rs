@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use ariadne::Report;
-use crate::ast::{Ast, FunctionParam, LambdaCapture, LambdaParam, MatchPatAst, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
+use crate::ast::{Ast, FunctionCallParam, FunctionParam, LambdaCapture, LambdaParam, MatchPatAst, StructElement, StructMethodSelf, TypeAst, TypeConstraintAst, UnnamedFunctionParam};
 use crate::error::{failure, hint_msg};
 use crate::lex::{Lexer, LexerError, LexerIterator, Tok, TokType};
 use crate::span::{spanned, spanned_ok, Span, Spannable, Spanned};
@@ -564,6 +564,15 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_maybe_unpack_expression(&'a self) -> PResult<Spanned<FunctionCallParam<'a>>> {
+        let unpack = self.peek_take(TokType::Ellipsis)?.map(|tok| tok.span);
+        let value = self.parse_expression()?;
+        spanned_ok(unpack.as_ref().map_or(value.1.start, |sp| sp.start)..value.1.end, FunctionCallParam {
+            value: Box::new(value),
+            unpack,
+        })
+    }
+
     fn parse_expression(&'a self) -> AstRes<'a> {
         self.parse_assignment()
     }
@@ -651,15 +660,13 @@ impl<'a> Parser<'a> {
             self.next()?;
             match tok.ty {
                 TokType::LParen => {
-                    // TODO: unpack
                     let params = self.parse_comma_separated(
-                        None, TokType::RParen, Self::parse_expression)?;
+                        None, TokType::RParen, Self::parse_maybe_unpack_expression)?;
                     val = spanned(val.1.start..params.1.end, Ast::Call(Box::new(val), params.0))
                 },
                 TokType::LBrack => {
-                    // TODO: unpack
                     let params = self.parse_comma_separated(
-                        None, TokType::RBrack, Self::parse_expression)?;
+                        None, TokType::RBrack, Self::parse_maybe_unpack_expression)?;
                     val = spanned(val.1.start..params.1.end, Ast::Index(Box::new(val), params.0))
                 },
                 TokType::Dot => {
@@ -734,17 +741,20 @@ impl<'a> Parser<'a> {
                 if let Some(end) = self.peek_take(TokType::RParen)? {
                     spanned_ok(tok.span.start..end.span.end, Ast::Tuple(vec![]))
                 } else {
-                    // TODO: unpack
-                    let val = self.parse_expression()?;
+                    let val = self.parse_maybe_unpack_expression()?;
                     if self.peek_take(TokType::Comma)?.is_some() {
                         let mut values = vec![val];
                         let span = self.parse_comma_separated_to(
-                            None, TokType::RParen, Self::parse_expression, &mut values)?;
+                            None, TokType::RParen, Self::parse_maybe_unpack_expression, &mut values)?;
                         spanned_ok(tok.span.start..span.end, Ast::Tuple(values))
                     } else {
                         // comma is already handled
                         let end = self.next_match_of(&[TokType::RParen, TokType::Comma])?;
-                        spanned_ok(tok.span.start..end.span.end, val.0)
+                        if val.0.unpack.is_some() {
+                            spanned_ok(end.span.start..end.span.end, Ast::Tuple(vec![val]))
+                        } else {
+                            spanned_ok(tok.span.start..end.span.end, val.0.value.0)
+                        }
                     }
                 }
             },
