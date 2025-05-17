@@ -11,3 +11,4 @@ members = [ "code","derive", "parse"]
 parse = { path = "parse" }
 code = { path = "code" }
 ariadne = "0.5.1"
+smol_str = "0.3.2"

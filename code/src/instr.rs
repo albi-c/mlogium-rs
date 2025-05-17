@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Display};
+use smol_str::SmolStr;
 use derive::Instruction;
 
 pub trait Instruction : Debug + Display {
@@ -14,11 +15,11 @@ pub trait Instruction : Debug + Display {
 #[derive(Debug, Clone)]
 pub enum InsIn {
     None,
-    Var(String),
+    Var(SmolStr),
     Int(i64),
     Float(f64),
-    Str(String),
-    Builtin(String),
+    Str(SmolStr),
+    Builtin(SmolStr),
 }
 
 impl Display for InsIn {
@@ -40,11 +41,11 @@ impl Default for InsIn {
     }
 }
 
-pub type InsOut = String;
+pub type InsOut = SmolStr;
 
 type In = InsIn;
 type Out = InsOut;
-type Sel = String;
+type Sel = SmolStr;
 
 #[derive(Debug, Instruction)]
 pub enum Ins {

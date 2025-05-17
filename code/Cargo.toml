@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 derive = { path = "../derive" }
+smol_str = "0.3.2"

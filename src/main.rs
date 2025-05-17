@@ -1,64 +1,47 @@
+mod context;
+mod compiler;
+mod tree;
+
 use ariadne::Source;
 use parse::lex::{Lexer, LexerIterator};
 use parse::parser::Parser;
+use crate::compiler::Compiler;
+use crate::context::Ctx;
 
 const TEST_CODE: &str = r#"
-struct S {
-    type T = num;
-    let x: num;
-
-    fn st(&a: i32) {}
-}
-
-struct Opt {
-    let v: num;
-    let h: num;
-    
-    fn map(self, func: {fn(S::T) -> ?}) {}
-    fn at(self, idx: {[num] -> ?}) {}
-}
-
-enum T {
-    A, B = 3.1, C = -1,
-}
-
-fn max(a: num, b: num) {
-}
-
 fn main() -> num {
+    test();
     0
 }
+
+fn test() {}
 "#;
 
 fn main() {
     let src = TEST_CODE;
 
     let lexer = Lexer::new(src);
-
-    let iterator = LexerIterator::new(lexer);
-
-    let mut tokens = vec![];
-    while let Some(tok) = iterator.next() {
-        match tok {
-            Ok(tok) => {
-                tokens.push(tok);
-            },
-            Err(err) => {
-                err.into_report(src).print(Source::from(src)).unwrap();
-                std::process::exit(1);
-            }
-        }
-    };
-
-    let lexer = Lexer::new(src);
     let parser = Parser::new(lexer, src);
     let ast = parser.parse();
 
-    match ast {
-        Ok(ast) => println!("{:?}", ast),
+    let ast = match ast {
+        Ok(ast) => ast,
         Err(err) => {
-            err.into_report(src).print(Source::from(src)).unwrap();
+            err.into_report(src).eprint(Source::from(src)).unwrap();
             std::process::exit(1);
+        },
+    };
+
+    let mut ctx = Ctx::new();
+    {
+        let mut compiler = Compiler::new(&mut ctx);
+        match compiler.compile(ast) {
+            Ok(_) => {},
+            Err(err) => {
+                err.into_error().eprint(Source::from(src)).unwrap();
+                std::process::exit(1);
+            },
         }
     }
+    println!("{:?}", ctx.globals);
 }
