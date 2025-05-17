@@ -13,6 +13,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "code"
+version = "0.1.0"
+dependencies = [
+ "derive",
+]
+
+[[package]]
 name = "derive"
 version = "0.1.0"
 dependencies = [
@@ -26,6 +33,7 @@ name = "mlogium"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "code",
  "parse",
 ]
 

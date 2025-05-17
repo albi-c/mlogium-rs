@@ -5,8 +5,9 @@ edition = "2024"
 
 [workspace]
 resolver = "3"
-members = ["derive", "parse"]
+members = [ "code","derive", "parse"]
 
 [dependencies]
-parse = { path = "parse", version = "0.1.0" }
+parse = { path = "parse" }
+code = { path = "code" }
 ariadne = "0.5.1"
